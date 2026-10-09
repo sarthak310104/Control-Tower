@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Agent, ActivityEvent, ActivityType
+from app.routers._guards import require_project
 from app.schemas import AgentRegister, AgentOut
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -17,6 +18,7 @@ def register_agent(payload: AgentRegister, db: Session = Depends(get_db)):
     (e.g. a fresh session of "claude-backend" starting up) just refreshes
     last_seen_at instead of erroring or creating a duplicate.
     """
+    require_project(db, payload.project_id)
     existing = (
         db.query(Agent)
         .filter(Agent.project_id == payload.project_id, Agent.name == payload.name)

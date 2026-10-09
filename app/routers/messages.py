@@ -1,11 +1,10 @@
-from datetime import datetime, timezone
-
-from fastapi import APIRouter, Depends
-from sqlalchemy import or_
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Message, Agent, ActivityEvent, ActivityType
+from app.models import Message, ActivityEvent, ActivityType
+from app.routers._guards import require_agent, require_project
 from app.schemas import MessageCreate, MessageOut
 
 router = APIRouter(prefix="/messages", tags=["messages"])
@@ -13,9 +12,11 @@ router = APIRouter(prefix="/messages", tags=["messages"])
 
 @router.post("", response_model=MessageOut, status_code=201)
 def send_message(payload: MessageCreate, db: Session = Depends(get_db)):
-    agent = db.get(Agent, payload.from_agent_id)
-    if agent is not None:
-        agent.last_seen_at = datetime.now(timezone.utc)
+    if not payload.body.strip():
+        raise HTTPException(422, "message body is empty")
+    require_agent(db, payload.from_agent_id, payload.project_id)
+    if payload.to_agent_id is not None:
+        require_agent(db, payload.to_agent_id, payload.project_id, touch=False)
 
     message = Message(
         project_id=payload.project_id,
@@ -42,15 +43,34 @@ def get_inbox(project_id: int, agent_id: int, since_id: int = 0, db: Session = D
     Messages directed at this agent specifically, or broadcast to the whole
     project, with id > since_id. An agent polls this with the highest id it
     has already seen as since_id -- simple, robust cursor, no timestamps/
-    clock-skew concerns across machines.
+    clock-skew concerns across machines. An agent's own broadcasts are
+    excluded: it already knows what it said.
     """
+    require_agent(db, agent_id, project_id)
+    db.commit()
     return (
         db.query(Message)
         .filter(
             Message.project_id == project_id,
             Message.id > since_id,
-            or_(Message.to_agent_id == agent_id, Message.to_agent_id.is_(None)),
+            or_(
+                Message.to_agent_id == agent_id,
+                and_(Message.to_agent_id.is_(None), Message.from_agent_id != agent_id),
+            ),
         )
         .order_by(Message.id.asc())
+        .all()
+    )
+
+
+@router.get("", response_model=list[MessageOut])
+def list_messages(project_id: int, since_id: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    """Project-wide message feed (every direct + broadcast message), for dashboards and audit."""
+    require_project(db, project_id)
+    return (
+        db.query(Message)
+        .filter(Message.project_id == project_id, Message.id > since_id)
+        .order_by(Message.id.asc())
+        .limit(min(limit, 500))
         .all()
     )

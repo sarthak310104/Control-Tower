@@ -89,3 +89,49 @@ class ActivityEventOut(BaseModel):
     agent_id: int | None
     payload: dict
     created_at: datetime
+
+
+class ConflictOut(BaseModel):
+    claim_id: int
+    agent_name: str
+    symbol_name: str | None
+    line_start: int  # re-resolved against the source you sent, not the stored snapshot
+    line_end: int
+    note: str | None
+
+
+class ClaimCheckOut(BaseModel):
+    file_path: str
+    symbol_name: str | None
+    line_start: int
+    line_end: int
+    ok: bool
+    conflicts: list[ConflictOut]
+
+
+class AgentHeartbeatOut(BaseModel):
+    agent_id: int
+    claims_refreshed: int
+
+
+class SymbolsRequest(BaseModel):
+    source: str
+
+
+class SymbolOut(BaseModel):
+    symbol: str
+    line_start: int
+    line_end: int
+
+
+class FileOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    file_path: str
+    line_count: int
+    updated_by: int | None
+    updated_at: datetime
+
+
+class FileContentOut(FileOut):
+    source: str
+    symbols: list[SymbolOut] | None  # None when the file isn't parseable Python

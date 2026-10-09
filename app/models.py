@@ -1,6 +1,7 @@
 import enum
 
 from sqlalchemy import (
+    func,
     Column,
     Integer,
     BigInteger,
@@ -46,7 +47,7 @@ class Project(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False, unique=True)
     repo_root = Column(Text, nullable=True)  # informational; not enforced server-side
-    created_at = Column(DateTime(timezone=True), server_default="now()")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class Agent(Base):
@@ -64,8 +65,8 @@ class Agent(Base):
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     name = Column(String, nullable=False)      # e.g. "claude-backend"
     role = Column(String, nullable=True)       # e.g. "backend", "frontend" -- informational
-    created_at = Column(DateTime(timezone=True), server_default="now()")
-    last_seen_at = Column(DateTime(timezone=True), server_default="now()")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at = Column(DateTime(timezone=True), server_default=func.now())
 
     project = relationship("Project")
 
@@ -96,8 +97,8 @@ class Claim(Base):
     line_end = Column(Integer, nullable=False)          # snapshot only -- see docstring
     note = Column(Text, nullable=True)                 # what the agent says it's doing
     status = Column(Enum(ClaimStatus), nullable=False, default=ClaimStatus.active)
-    created_at = Column(DateTime(timezone=True), server_default="now()")
-    last_heartbeat_at = Column(DateTime(timezone=True), server_default="now()")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_heartbeat_at = Column(DateTime(timezone=True), server_default=func.now())
     released_at = Column(DateTime(timezone=True), nullable=True)
     release_note = Column(Text, nullable=True)
 
@@ -120,7 +121,7 @@ class Message(Base):
     from_agent_id = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False)
     to_agent_id = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=True)
     body = Column(Text, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default="now()")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     project = relationship("Project")
     from_agent = relationship("Agent", foreign_keys=[from_agent_id])
@@ -145,10 +146,30 @@ class ActivityEvent(Base):
     type = Column(Enum(ActivityType), nullable=False)
     agent_id = Column(Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
     payload = Column(JSONB, nullable=False, default=dict)
-    created_at = Column(DateTime(timezone=True), server_default="now()")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     project = relationship("Project")
     agent = relationship("Agent")
 
 
 Index("ix_activity_project_created", ActivityEvent.project_id, ActivityEvent.created_at)
+
+
+class FileSnapshot(Base):
+    """
+    The latest content of a file as an agent sent it with a claim. The
+    coordinator never reads anyone's disk; this is only what agents have
+    shown it, kept so the dashboard can draw files and show claimed lines
+    without an agent being online. It can lag behind the real file.
+    """
+
+    __tablename__ = "file_snapshots"
+    __table_args__ = (Index("uq_snapshot_project_file", "project_id", "file_path", unique=True),)
+
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    file_path = Column(Text, nullable=False)
+    source = Column(Text, nullable=False)
+    line_count = Column(Integer, nullable=False)
+    updated_by = Column(Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

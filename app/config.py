@@ -20,5 +20,10 @@ class Settings:
     # machine per agent) uses to reach this REST API.
     coordinator_url: str = os.getenv("COORDINATOR_URL", "http://localhost:8000")
 
+    # Lets the dashboard load a sample project (POST /demo/seed). It only ever
+    # touches the project named below, but turn it off on a shared coordinator.
+    demo_enabled: bool = os.getenv("DEMO_ENABLED", "true").lower() in ("1", "true", "yes")
+    demo_project: str = os.getenv("DEMO_PROJECT", "storefront-demo")
+
 
 settings = Settings()

@@ -1,4 +1,5 @@
 import logging
+from datetime import timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -25,7 +26,9 @@ def start_reaper() -> None:
     global _scheduler
     if _scheduler is not None:
         return
-    _scheduler = AsyncIOScheduler()
+    # Pinned to UTC: letting APScheduler resolve the host's local zone crashes
+    # startup on hosts whose zone is a legacy alias (e.g. Asia/Calcutta).
+    _scheduler = AsyncIOScheduler(timezone=timezone.utc)
     _scheduler.add_job(_sweep, "interval", seconds=settings.reaper_interval_seconds, id="claim_reaper")
     _scheduler.start()
     logger.info(

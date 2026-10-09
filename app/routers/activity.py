@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import ActivityEvent
+from app.routers._guards import require_project
 from app.schemas import ActivityEventOut
 
 router = APIRouter(prefix="/activity", tags=["activity"])
@@ -16,10 +17,11 @@ def get_activity(project_id: int, since_id: int = 0, limit: int = 100, db: Sessi
     registrations). A newly-starting or resuming agent reads this first to
     reconstruct context it doesn't otherwise have.
     """
+    require_project(db, project_id)
     return (
         db.query(ActivityEvent)
         .filter(ActivityEvent.project_id == project_id, ActivityEvent.id > since_id)
         .order_by(ActivityEvent.id.asc())
-        .limit(limit)
+        .limit(min(limit, 500))
         .all()
     )

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Control Tower</title>
+  <meta name="description" content="Live coordination board for AI coding agents sharing one codebase.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2308080a'/%3E%3Crect x='7' y='7' width='18' height='18' fill='none' stroke='%23e6e6e6' stroke-width='3'/%3E%3Crect x='12' y='12' width='8' height='13' fill='%23ab8ff1'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- ======================= NAV ======================= -->
+  <header class="nav" id="nav" hidden>
+    <div class="nav-left">
+      <a class="brand" href="#home"><span class="brand-mark" aria-hidden="true"></span>Control Tower</a>
+      <nav class="nav-links" aria-label="Main">
+        <a href="#home" data-route="home">Home</a>
+        <a href="#dashboard" data-route="dashboard">Dashboard</a>
+        <a href="#claims" data-route="claims">Claims <span class="n" id="n-claims"></span></a>
+        <a href="#agents" data-route="agents">Agents <span class="n" id="n-agents"></span></a>
+        <a href="#activity" data-route="activity">Activity</a>
+      </nav>
+    </div>
+    <div class="nav-right">
+      <span class="online" id="online" data-state="ok">Connecting</span>
+      <label><span class="sr-only">Project</span><select class="proj" id="proj"></select></label>
+      <button class="nav-btn" type="button" id="open-sim">Simulate <span class="key">[S]</span></button>
+      <a class="nav-btn quiet" href="#workspace">Switch workspace</a>
+    </div>
+  </header>
+
+  <!-- ======================= WORKSPACE (entry) ======================= -->
+  <section class="view stage entry" data-view="workspace" aria-labelledby="ws-h" hidden>
+    <div class="gl-slot" data-scene="towers"></div>
+    <div class="entry-grid">
+      <div class="entry-copy">
+        <span class="brand"><span class="brand-mark" aria-hidden="true"></span>Control Tower</span>
+        <h1 class="display d1" id="ws-h">Every agent knows whose code it is.</h1>
+      </div>
+      <div class="entry-card">
+        <h2>Choose a workspace</h2>
+        <p>A workspace is one codebase your agents share. Agents join it through the MCP server with <code>CT_PROJECT</code>.</p>
+        <ul class="ws-list" id="ws-list" aria-label="Workspaces"></ul>
+        <form class="ws-new" id="ws-new">
+          <label for="ws-name">New workspace</label>
+          <div class="inline"><input class="field-in mono" id="ws-name" placeholder="my-app" autocomplete="off" spellcheck="false" required><button class="btn btn-ghost" type="submit">Create</button></div>
+        </form>
+        <div class="or" id="ws-or">or</div>
+        <button class="btn btn-primary wide" type="button" id="ws-demo">Load the sample project</button>
+        <p class="fine" id="ws-status" aria-live="polite"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= HOME ======================= -->
+  <div class="view" data-view="home" hidden>
+    <section class="stage hero" aria-labelledby="home-h">
+      <div class="gl-slot" data-scene="towers"></div>
+      <div class="scene-ui">
+        <span class="hint">Each tower is a file, each floor a line. Drag to rotate, hover to read, click a floor to claim it.</span>
+        <div class="zoom" role="group" aria-label="View">
+          <button class="btn btn-ghost" type="button" data-zoom="-1" aria-label="Zoom in">+</button>
+          <button class="btn btn-ghost" type="button" data-zoom="1" aria-label="Zoom out">&minus;</button>
+          <button class="btn btn-ghost" type="button" data-zoom="0">Reset view <span class="key">[0]</span></button>
+        </div>
+      </div>
+      <div class="hero-bottom">
+        <h1 class="display d1" id="home-h">Connecting.</h1>
+        <div class="hero-side">
+          <p>Glowing floors are code an agent has reserved. When another agent asks for overlapping lines, the tower flashes and the claim is refused.</p>
+          <div class="actions scenario-actions"></div>
+        </div>
+      </div>
+    </section>
+    <div class="page tight">
+      <div class="cells" id="home-cells"></div>
+      <div class="split">
+        <section class="box" aria-labelledby="hf-h"><div class="box-head"><h2 id="hf-h">Latest activity</h2><a class="btn btn-text" href="#activity">View all <span class="key">[A]</span></a></div><ol class="feed" id="home-feed"></ol></section>
+        <section class="box" aria-labelledby="hm-h"><div class="box-head"><h2 id="hm-h">Messages</h2><a class="btn btn-text" href="#activity">Open radio</a></div><ol class="msgs" id="home-msgs"></ol></section>
+      </div>
+    </div>
+    <section class="statement-band">
+      <p class="statement">Claims follow <b>names, not line numbers.</b> Insert code above a claimed function and the claim moves with it. Claim a class and every method inside it is covered.</p>
+    </section>
+  </div>
+
+  <!-- ======================= DASHBOARD ======================= -->
+  <div class="view" data-view="dashboard" hidden>
+    <section class="stage hero hero-orbit" aria-labelledby="dash-h">
+      <div class="gl-slot" data-scene="orbit"></div>
+      <div class="scene-ui">
+        <span class="hint">The core is your repo, the nodes are files, and each agent orbits it. A beam means that agent holds code in that file.</span>
+        <button class="btn btn-ghost" type="button" data-zoom="0">Reset view <span class="key">[0]</span></button>
+      </div>
+      <div class="hero-bottom">
+        <h1 class="display d1" id="dash-h">Connecting.</h1>
+        <div class="hero-side">
+          <div class="legend"><span><i class="lg-beam"></i>Claim beam</span><span><i class="lg-hot"></i>Collision</span><span><i class="lg-msg"></i>Message</span></div>
+          <p>Every refused claim is a collision that never reached your code.</p>
+          <div class="actions scenario-actions"></div>
+        </div>
+      </div>
+    </section>
+    <section class="section" aria-labelledby="tl-h">
+      <div class="sec-head">
+        <div><h2 class="display d2" id="tl-h">Timeline</h2><p>Who held what, and when. Hover to scrub back in time; click a bar or a collision for details.</p></div>
+        <div class="tabs" role="group" aria-label="Time window">
+          <button class="tab" type="button" data-win="10" aria-pressed="false">10 min</button>
+          <button class="tab" type="button" data-win="30" aria-pressed="true">30 min</button>
+          <button class="tab" type="button" data-win="60" aria-pressed="false">1 hour</button>
+        </div>
+      </div>
+      <div class="tl">
+        <div class="tl-top"><span><i class="lg-held"></i>Claim held</span><span><i class="lg-hot"></i>Collision refused</span><span><i class="lg-dot"></i>Message sent</span></div>
+        <div class="tl-body">
+          <div class="lanes" id="tl-lanes"></div>
+          <div class="tl-wrap" id="tl-wrap"><canvas id="tl" aria-label="Timeline of claims per agent"></canvas><div class="scrub" id="tl-scrub"></div><div class="readout" id="tl-readout"></div></div>
+        </div>
+        <div class="axis" id="tl-axis"></div>
+      </div>
+    </section>
+    <div class="strip" id="dash-stats"></div>
+  </div>
+
+  <!-- ======================= CLAIMS ======================= -->
+  <div class="view page" data-view="claims" hidden>
+    <header class="page-head">
+      <div><h1 class="display d2">Claims <span class="count" id="claims-count"></span></h1><p>Code reserved before editing. Select a claim to see the exact lines it covers and who else is in the same file.</p></div>
+      <div class="toolbar" id="claim-filter" aria-label="Filter by agent"></div>
+    </header>
+    <div class="table">
+      <div class="thead" aria-hidden="true"><span>Code</span><span>Held by</span><span>Held for</span></div>
+      <div id="claim-list"></div>
+    </div>
+  </div>
+
+  <!-- ======================= AGENTS ======================= -->
+  <div class="view page" data-view="agents" hidden>
+    <header class="page-head">
+      <div><h1 class="display d2">Agents <span class="count" id="agents-count"></span></h1><p>Each AI session that joined this workspace. Claims stay alive while a session runs, and expire after it goes quiet.</p></div>
+      <button class="btn btn-ghost" type="button" id="add-agent">Register an agent</button>
+    </header>
+    <div class="cells cells-auto" id="agent-cells"></div>
+  </div>
+
+  <!-- ======================= ACTIVITY ======================= -->
+  <div class="view page" data-view="activity" hidden>
+    <header class="page-head">
+      <div><h1 class="display d2">Activity</h1><p>Everything that happened in this workspace, newest first. A resuming agent reads this to catch up.</p></div>
+    </header>
+    <div class="split">
+      <section class="box" aria-labelledby="ev-h"><div class="box-head"><h2 id="ev-h">Events</h2><span class="label" id="ev-count"></span></div><ol class="feed tall" id="feed"></ol></section>
+      <section class="box" aria-labelledby="ra-h"><div class="box-head"><h2 id="ra-h">Radio</h2><button class="btn btn-text" type="button" id="compose">Send a message</button></div><ol class="msgs tall" id="msgs"></ol></section>
+    </div>
+  </div>
+
+  <footer class="foot" id="foot" hidden>
+    <span id="foot-note"></span>
+    <span>Agents connect over MCP: <code>claim</code> <code>release</code> <code>catch_up</code></span>
+  </footer>
+
+  <!-- ======================= SHEETS ======================= -->
+  <div class="scrim" id="scrim" hidden></div>
+
+  <aside class="sheet" id="detail" hidden role="dialog" aria-modal="true" aria-labelledby="detail-h">
+    <header class="sheet-head">
+      <div><h2 class="d3 mono" id="detail-h"></h2><p id="detail-sub"></p></div>
+      <button class="btn btn-ghost" type="button" data-close>Close <span class="key">[Esc]</span></button>
+    </header>
+    <div class="section">
+      <dl class="facts" id="detail-facts"></dl>
+      <div class="actions"><button class="btn btn-ghost" type="button" id="detail-release">Release</button></div>
+      <output class="result" id="detail-result" aria-live="polite"></output>
+    </div>
+    <div class="section">
+      <h3 id="detail-file" class="mono small"></h3>
+      <div class="code-key" id="detail-key"></div>
+      <div class="code" id="detail-code"></div>
+      <p class="fine" id="detail-snap"></p>
+    </div>
+  </aside>
+
+  <aside class="sheet" id="sim" hidden role="dialog" aria-modal="true" aria-labelledby="sim-h">
+    <header class="sheet-head">
+      <div><h2 class="d3" id="sim-h">Simulate</h2><p>Act as any agent in this workspace. These forms make the same API calls an agent's MCP server makes.</p></div>
+      <button class="btn btn-ghost" type="button" data-close>Close <span class="key">[Esc]</span></button>
+    </header>
+    <form class="section" id="f-claim">
+      <h3>Claim code</h3>
+      <div class="pair">
+        <label for="c-agent">Agent<select class="field-in agent-select" id="c-agent"></select></label>
+        <label for="c-file">File<select class="field-in mono" id="c-file"></select></label>
+      </div>
+      <div id="c-new" hidden class="stack">
+        <label for="c-path">New file path<input class="field-in mono" id="c-path" placeholder="app/new_module.py" autocomplete="off" spellcheck="false"></label>
+        <label for="c-source">File contents<textarea class="field-in" id="c-source" rows="7" spellcheck="false"></textarea></label>
+      </div>
+      <div class="trio">
+        <label for="c-symbol">Function or class<select class="field-in" id="c-symbol"></select></label>
+        <label for="c-from">From line<input class="field-in" id="c-from" type="number" min="1" disabled></label>
+        <label for="c-to">To line<input class="field-in" id="c-to" type="number" min="1" disabled></label>
+      </div>
+      <label for="c-note">Note for other agents<input class="field-in" id="c-note" placeholder="What you're about to change" autocomplete="off"></label>
+      <div class="actions">
+        <button class="btn btn-primary" type="submit" value="claim">Claim</button>
+        <button class="btn btn-ghost" type="submit" value="check">Check without claiming</button>
+      </div>
+      <output class="result" id="c-result" aria-live="polite"></output>
+    </form>
+    <form class="section" id="f-msg">
+      <h3>Send a message</h3>
+      <div class="pair">
+        <label for="m-from">From<select class="field-in agent-select" id="m-from"></select></label>
+        <label for="m-to">To<select class="field-in agent-select with-all" id="m-to"></select></label>
+      </div>
+      <label for="m-body">Message<textarea class="field-in" id="m-body" rows="3"></textarea></label>
+      <div class="actions"><button class="btn btn-primary" type="submit">Send</button></div>
+    </form>
+    <form class="section" id="f-agent">
+      <h3>Register an agent</h3>
+      <div class="pair">
+        <label for="a-name">Name<input class="field-in mono" id="a-name" placeholder="cursor-infra" autocomplete="off" spellcheck="false"></label>
+        <label for="a-role">Role<input class="field-in" id="a-role" placeholder="infra" autocomplete="off"></label>
+      </div>
+      <div class="actions"><button class="btn btn-primary" type="submit">Register</button></div>
+    </form>
+  </aside>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="js/core.js"></script>
+  <script src="js/gfx.js"></script>
+  <script src="js/scene-towers.js"></script>
+  <script src="js/scene-orbit.js"></script>
+  <script src="js/timeline.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
