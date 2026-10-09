@@ -2,6 +2,8 @@
 
 ![tests](https://github.com/sarthak310104/Control-Tower/actions/workflows/ci.yml/badge.svg)
 
+**Live demo: [control-tower-lv5k.onrender.com](https://control-tower-lv5k.onrender.com/ui/)** (free hosting, so the first load can take up to a minute while it wakes up). Click "Load the sample project", then "Play a scenario".
+
 A coordination service for multiple AI coding agents working on the same
 codebase at once (say Claude Code on the backend and Codex on the frontend).
 Agents claim the **specific functions, methods or classes** they are about to
