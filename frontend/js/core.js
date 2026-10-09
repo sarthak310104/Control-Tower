@@ -52,12 +52,22 @@ window.CT = window.CT || {};
       super(msg); this.status = status; this.detail = detail;
     }
   }
+  /* The admin token, when the coordinator has auth on. Kept in sessionStorage so it
+     goes away with the tab; never put in a URL. */
+  const auth = {
+    get token() { try { return sessionStorage.getItem("ct.admin"); } catch { return null; } },
+    set token(v) { try { v ? sessionStorage.setItem("ct.admin", v) : sessionStorage.removeItem("ct.admin"); } catch { /* unavailable */ } },
+  };
   async function api(path, { method = "GET", body, params } = {}) {
     const url = new URL(path, location.origin);
     if (params) for (const [k, v] of Object.entries(params)) if (v != null) url.searchParams.set(k, v);
-    const resp = await fetch(url, { method, headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
+    const headers = {};
+    if (body) headers["Content-Type"] = "application/json";
+    if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
+    const resp = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
     let data = null;
     try { data = await resp.json(); } catch { /* empty */ }
+    if (resp.status === 401) emit("unauthorized", data?.detail);
     if (!resp.ok) throw new ApiError(resp.status, data?.detail);
     return data;
   }
@@ -70,7 +80,7 @@ window.CT = window.CT || {};
   /* ---------------- store ---------------- */
   const store = {
     online: false, health: { claim_ttl_seconds: 600 },
-    projects: [], projectId: null,
+    projects: [], projectId: null, joinKeys: {},
     agents: [], claims: [], files: [], events: [], messages: [],
     contents: {}, // file_path -> {updated_at, source, symbols}
     eventCursor: 0, messageCursor: 0, loaded: false,
@@ -96,6 +106,7 @@ window.CT = window.CT || {};
   const agentState = (a) => (Date.now() - ts(a.last_seen_at) < 120_000 ? "active" : Date.now() - ts(a.last_seen_at) < store.ttl ? "quiet" : "gone");
   const target = (c) => c.symbol || `lines ${c.line_start}–${c.line_end}`;
   const refusals = () => store.events.filter((e) => e.type === "claim_rejected");
+  const editFindings = () => store.events.filter((e) => e.type === "edit_unclaimed" || e.type === "edit_conflict");
 
   /* Current line range of a claim, re-resolved against the latest snapshot (claims are by name). */
   function rangeOf(c) {
@@ -206,7 +217,16 @@ window.CT = window.CT || {};
   }
   async function createProject(name) {
     const p = await api("/projects", { method: "POST", body: { name } });
+    if (p.join_key) store.joinKeys[p.id] = p.join_key;  // shown once by the server; kept for this tab only
     await loadProjects(); return p;
+  }
+  async function rotateJoinKey(projectId) {
+    const r = await api(`/projects/${projectId}/join-key`, { method: "POST" });
+    store.joinKeys[projectId] = r.join_key; return r.join_key;
+  }
+  async function reconcile(agentId, files, base) {
+    const r = await api("/reconcile", { method: "POST", body: { project_id: store.projectId, agent_id: agentId, base: base || null, files } });
+    await refresh(); return r;
   }
   async function seedDemo() {
     const p = await api("/demo/seed", { method: "POST" });
@@ -215,8 +235,8 @@ window.CT = window.CT || {};
 
   Object.assign(CT, {
     $, el, dur, clock, word, storage, api, ApiError, on, emit, store, active, agentById, agentName, agentColor, agentState,
-    target, refusals, rangeOf, lineCount, loadContent, selectProject, loadProjects, refresh, poll,
-    claim, release, send, register, createProject, seedDemo, ts,
+    target, refusals, editFindings, rangeOf, lineCount, loadContent, selectProject, loadProjects, refresh, poll,
+    claim, release, send, register, createProject, seedDemo, rotateJoinKey, reconcile, ts, auth,
     reduceMotion: () => matchMedia("(prefers-reduced-motion: reduce)").matches,
   });
 })();

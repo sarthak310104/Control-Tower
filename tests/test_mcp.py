@@ -6,6 +6,7 @@ transport, which hits the real test database. No ports, no subprocesses.
 
 import asyncio
 import json
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -34,9 +35,9 @@ def repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def agent(repo: Path, name: str, heartbeat_seconds: int = 120):
+def agent(repo: Path, name: str, heartbeat_seconds: int = 120, join_key: str | None = None, project: str = "mcp-test"):
     settings = MCPSettings(
-        coordinator_url="http://ct", project="mcp-test", agent=name, role=None,
+        coordinator_url="http://ct", project=project, agent=name, role=None, join_key=join_key,
         repo_root=repo.resolve(), heartbeat_seconds=heartbeat_seconds,
     )
     server = build_server(settings, transport=httpx.ASGITransport(app=app))
@@ -157,3 +158,116 @@ def test_canonical_path_accepts_absolute_inside_and_rejects_outside(repo):
     for bad in ("../secret", "/etc/passwd", ".", ""):
         with pytest.raises(WorkspaceError):
             canonical_path(root, bad)
+
+
+# ---------------------------------------------------------------- git reconciliation
+
+def git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(repo), *args],
+                   check=True, capture_output=True)
+
+
+@pytest.fixture
+def git_repo(repo: Path) -> Path:
+    git(repo, "init", "-q")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "start")
+    return repo
+
+
+def edit_line(path: Path, old: str, new: str) -> None:
+    text = path.read_text()
+    assert old in text, f"test edit doesn't match the file: {old!r}"
+    path.write_text(text.replace(old, new))
+
+
+async def test_reconcile_flags_edits_made_without_a_claim(git_repo):
+    _, a_client = agent(git_repo, "a")
+    async with a_client as a:
+        await call(a, "claim", file_path="app/service.py", symbol_name="helper")   # session base recorded here
+        svc = git_repo / "app" / "service.py"
+        edit_line(svc, "return 42", "return 43")                                  # inside the claim
+        edit_line(svc, 'return {"name": name}', 'return {"name": name.strip()}')  # UserService.create: unclaimed
+        git(git_repo, "commit", "-qam", "agent work")                             # committed edits count too
+        (git_repo / "notes.txt").write_text("new file\n")                         # untracked: listed, not flagged
+        r = await call(a, "reconcile")
+        assert r["clean"] is False
+        [problem] = r["edits_outside_your_claims"]
+        assert problem["file_path"] == "app/service.py" and problem["symbols"] == ["UserService.create"]
+        assert problem["inside_claims_of"] == []
+        assert r["new_files"] == ["notes.txt"]
+
+
+async def test_release_reconciles_and_reports_edits_inside_another_agents_claim(git_repo):
+    _, a_client = agent(git_repo, "a")
+    _, b_client = agent(git_repo, "b")
+    async with a_client as a, b_client as b:
+        await call(b, "claim", file_path="app/service.py", symbol_name="UserService.create", note="validation")
+        c = await call(a, "claim", file_path="app/service.py", symbol_name="helper")
+        edit_line(git_repo / "app" / "service.py", 'return {"name": name}', "return {}")  # inside b's claim
+        r = await call(a, "release", claim_id=c["claim_id"], note="done")
+        assert r["released"] and r["reconcile"]["clean"] is False
+        assert r["reconcile"]["edits_outside_your_claims"][0]["inside_claims_of"] == ["b (UserService.create)"]
+        assert "Message them" in r["reconcile"]["what_to_do"]
+        feed = await call(b, "catch_up")
+        assert any(e["type"] == "edit_conflict" for e in feed["new_activity"])
+
+
+async def test_reconcile_outside_a_git_repo_says_why(repo):
+    _, a_client = agent(repo, "a")
+    async with a_client as a:
+        assert "reconciliation is off" in (await call(a, "reconcile"))["error"]
+        c = await call(a, "claim", file_path="app/service.py", symbol_name="helper")
+        assert "reconcile" not in await call(a, "release", claim_id=c["claim_id"])  # release still works
+
+
+# ---------------------------------------------------------------- auth
+
+async def test_agents_join_with_a_key_when_auth_is_on(repo, auth_on):
+    from fastapi.testclient import TestClient
+    project = TestClient(app).post("/projects", json={"name": "locked"}, headers=auth_on).json()
+    _, good = agent(repo, "a", join_key=project["join_key"], project="locked")
+    _, bad = agent(repo, "b", join_key="wrong", project="locked")
+    async with good as a, bad as b:
+        assert (await call(a, "claim", file_path="app/service.py", symbol_name="helper"))["granted"] is True
+        assert (await call(a, "status"))["project"] == "locked"
+        assert "join key" in (await call(b, "status"))["error"]
+
+
+def test_diff_parser_handles_additions_deletions_and_renames():
+    from mcp_server.gitdiff import parse_diff
+    diff = """\
+diff --git a/app/x.py b/app/x.py
+index 1..2 100644
+--- a/app/x.py
++++ b/app/x.py
+@@ -3,0 +4,2 @@ def f():
+@@ -9,3 +11 @@
+@@ -20 +19,0 @@
+diff --git a/old.py b/old.py
+deleted file mode 100644
+--- a/old.py
++++ /dev/null
+@@ -1,4 +0,0 @@
+diff --git a/new.py b/new.py
+new file mode 100644
+--- /dev/null
++++ b/new.py
+@@ -0,0 +1,3 @@
+diff --git a/a.py b/b.py
+similarity index 90%
+rename from a.py
+rename to b.py
+--- a/a.py
++++ b/b.py
+@@ -2 +2 @@
+diff --git a/img.png b/img.png
+Binary files a/img.png and b/img.png differ
+"""
+    got = {c.path: (c.status, c.ranges) for c in parse_diff(diff)}
+    assert got == {
+        "app/x.py": ("modified", [(4, 5), (11, 11), (19, 19)]),  # +19,0 is a pure deletion, pinned to line 19
+        "old.py": ("deleted", []),
+        "new.py": ("added", [(1, 3)]),
+        "b.py": ("modified", [(2, 2)]),
+    }

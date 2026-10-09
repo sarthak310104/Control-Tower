@@ -1,11 +1,18 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.config import settings
+
+NAME = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9][A-Za-z0-9._\-]*$")
+PATH = Field(min_length=1, max_length=1024)
+SOURCE = Field(max_length=settings.max_source_chars)
+NOTE = Field(default=None, max_length=2000)
 
 
 class ProjectCreate(BaseModel):
-    name: str
-    repo_root: str | None = None
+    name: str = NAME
+    repo_root: str | None = Field(default=None, max_length=1024)
 
 
 class ProjectOut(BaseModel):
@@ -16,10 +23,26 @@ class ProjectOut(BaseModel):
     created_at: datetime
 
 
+class ProjectCreatedOut(ProjectOut):
+    # Shown only when the project is first created or its key is rotated; agents need it to join.
+    join_key: str | None = None
+
+
+class JoinKeyOut(BaseModel):
+    project_id: int
+    join_key: str
+
+
 class AgentRegister(BaseModel):
     project_id: int
-    name: str
-    role: str | None = None
+    name: str = NAME
+    role: str | None = Field(default=None, max_length=60)
+
+
+class AgentJoin(BaseModel):
+    project: str = NAME  # project name; created on join only when auth is off
+    name: str = NAME
+    role: str | None = Field(default=None, max_length=60)
 
 
 class AgentOut(BaseModel):
@@ -31,15 +54,25 @@ class AgentOut(BaseModel):
     last_seen_at: datetime
 
 
+class AgentRegisteredOut(AgentOut):
+    token: str | None = None  # the agent's bearer token when auth is on; shown once
+
+
+class JoinOut(BaseModel):
+    project_id: int
+    agent: AgentOut
+    token: str | None  # None when auth is off
+
+
 class ClaimCreate(BaseModel):
     project_id: int
     agent_id: int
-    file_path: str
-    source: str
-    symbol_name: str | None = None
+    file_path: str = PATH
+    source: str = SOURCE
+    symbol_name: str | None = Field(default=None, max_length=300)
     line_start: int | None = None
     line_end: int | None = None
-    note: str | None = None
+    note: str | None = NOTE
 
 
 class ClaimOut(BaseModel):
@@ -61,14 +94,14 @@ class ClaimOut(BaseModel):
 
 class ClaimRelease(BaseModel):
     agent_id: int
-    release_note: str | None = None
+    release_note: str | None = NOTE
 
 
 class MessageCreate(BaseModel):
     project_id: int
     from_agent_id: int
     to_agent_id: int | None = None  # null = broadcast to the whole project
-    body: str
+    body: str = Field(max_length=10_000)
 
 
 class MessageOut(BaseModel):
@@ -115,7 +148,8 @@ class AgentHeartbeatOut(BaseModel):
 
 
 class SymbolsRequest(BaseModel):
-    source: str
+    source: str = SOURCE
+    file_path: str | None = Field(default=None, max_length=1024)  # picks the language; Python when omitted
 
 
 class SymbolOut(BaseModel):
@@ -134,4 +168,44 @@ class FileOut(BaseModel):
 
 class FileContentOut(FileOut):
     source: str
-    symbols: list[SymbolOut] | None  # None when the file isn't parseable Python
+    symbols: list[SymbolOut] | None  # None when the file doesn't parse or its language has no symbol support
+
+
+class ReconcileFile(BaseModel):
+    file_path: str = PATH
+    source: str | None = Field(default=None, max_length=settings.max_source_chars)  # None for a deleted file
+    changed: list[tuple[int, int]] = Field(default_factory=list, max_length=5000)  # line ranges in `source`
+    status: str = Field(default="modified", pattern="^(modified|added|deleted)$")
+
+
+class ReconcileRequest(BaseModel):
+    project_id: int
+    agent_id: int
+    base: str | None = Field(default=None, max_length=200)  # informational: the git ref the diff was taken against
+    files: list[ReconcileFile] = Field(max_length=500)
+
+
+class OverlapOut(BaseModel):
+    claim_id: int
+    agent_id: int
+    agent: str
+    target: str
+
+
+class FindingOut(BaseModel):
+    kind: str  # edit_unclaimed | edit_conflict
+    file_path: str
+    ranges: list[tuple[int, int]]
+    symbols: list[str]
+    overlaps: list[OverlapOut]
+    new: bool  # False if this exact finding was already reported
+
+
+class ReconcileOut(BaseModel):
+    clean: bool
+    files_checked: int
+    lines_changed: int
+    lines_covered: int
+    findings: list[FindingOut]
+    added: list[str]
+    deleted: list[str]

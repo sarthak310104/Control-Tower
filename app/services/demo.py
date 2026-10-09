@@ -129,7 +129,7 @@ def seed_demo(db: Session) -> Project:
         events.append((ago(minutes=35 - i), ActivityType.agent_registered, agents[name], {"name": name, "role": role}))
 
     def add_claim(agent, path, symbol=None, lines=None, note=None, start=None, end=None, beat=None):
-        ls, le = resolve_range(FILES[path], symbol, *(lines or (None, None)))
+        ls, le = resolve_range(FILES[path], symbol, *(lines or (None, None)), path)
         c = Claim(project_id=project.id, agent_id=agent.id, file_path=path, symbol_name=symbol,
                   line_start=ls, line_end=le, note=note, created_at=start,
                   last_heartbeat_at=beat or end or start,
@@ -147,7 +147,7 @@ def seed_demo(db: Session) -> Project:
     add_claim(cb, "app/models.py", "Order.count", note="Count only active items", start=ago(minutes=27), end=ago(minutes=16))
     add_claim(gt, "app/pricing.py", "subtotal", note="Property tests", start=ago(minutes=21), end=ago(minutes=11))
     add_claim(cf, "README.md", lines=(1, 4), note="Document the checkout flow", start=ago(minutes=24), end=ago(minutes=3))
-    add_claim(cf, "web/checkout.tsx", lines=(1, 3), note="Wire Checkout to the new pricing API",
+    add_claim(cf, "web/checkout.tsx", "Checkout", note="Wire Checkout to the new pricing API",
               start=ago(minutes=12, seconds=40), beat=ago(minutes=8, seconds=50))
     create = add_claim(cb, "app/service.py", "UserService.create", note="Validate email and reject duplicates",
                        start=ago(minutes=4, seconds=12), beat=ago(seconds=40))
@@ -155,6 +155,9 @@ def seed_demo(db: Session) -> Project:
               start=ago(minutes=2), beat=ago(seconds=30))
     add_claim(gt, "app/service.py", "helper", note="Add unit tests", start=ago(seconds=63), beat=ago(seconds=20))
 
+    events.append((ago(minutes=8), ActivityType.edit_unclaimed, cf,
+                   {"file_path": "app/models.py", "ranges": [[10, 11]], "symbols": ["User.display"], "overlaps": [],
+                    "fingerprint": "sample-unclaimed-1", "base": "sample"}))
     events.append((ago(minutes=18), ActivityType.claim_rejected, gt,
                    {"file_path": "app/models.py", "symbol_name": "Order", "conflicting_claim_id": None, "conflicting_agent": "claude-backend"}))
     events.append((ago(seconds=90), ActivityType.claim_rejected, gt,

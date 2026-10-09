@@ -41,6 +41,14 @@
         <h1 class="display d1" id="ws-h">Every agent knows whose code it is.</h1>
       </div>
       <div class="entry-card">
+        <form class="token-form" id="token-form" hidden>
+          <h2>Sign in with the admin token</h2>
+          <p>This coordinator has auth on. Paste the value of <code>CT_ADMIN_TOKEN</code>. It's kept only in this browser tab.</p>
+          <label for="token-in" class="sr-only">Admin token</label>
+          <div class="inline"><input class="field-in mono" id="token-in" type="password" autocomplete="off" spellcheck="false" required><button class="btn btn-primary" type="submit">Sign in</button></div>
+          <p class="fine" id="token-status" aria-live="polite"></p>
+        </form>
+        <div class="ws-body" id="ws-body">
         <h2>Choose a workspace</h2>
         <p>A workspace is one codebase your agents share. Agents join it through the MCP server with <code>CT_PROJECT</code>.</p>
         <ul class="ws-list" id="ws-list" aria-label="Workspaces"></ul>
@@ -51,6 +59,7 @@
         <div class="or" id="ws-or">or</div>
         <button class="btn btn-primary wide" type="button" id="ws-demo">Load the sample project</button>
         <p class="fine" id="ws-status" aria-live="polite"></p>
+        </div>
       </div>
     </div>
   </section>
@@ -114,7 +123,7 @@
         </div>
       </div>
       <div class="tl">
-        <div class="tl-top"><span><i class="lg-held"></i>Claim held</span><span><i class="lg-hot"></i>Collision refused</span><span><i class="lg-dot"></i>Message sent</span></div>
+        <div class="tl-top"><span><i class="lg-held"></i>Claim held</span><span><i class="lg-hot"></i>Collision refused</span><span><i class="lg-edit"></i>Edit outside a claim</span><span><i class="lg-dot"></i>Message sent</span></div>
         <div class="tl-body">
           <div class="lanes" id="tl-lanes"></div>
           <div class="tl-wrap" id="tl-wrap"><canvas id="tl" aria-label="Timeline of claims per agent"></canvas><div class="scrub" id="tl-scrub"></div><div class="readout" id="tl-readout"></div></div>
@@ -141,7 +150,10 @@
   <div class="view page" data-view="agents" hidden>
     <header class="page-head">
       <div><h1 class="display d2">Agents <span class="count" id="agents-count"></span></h1><p>Each AI session that joined this workspace. Claims stay alive while a session runs, and expire after it goes quiet.</p></div>
-      <button class="btn btn-ghost" type="button" id="add-agent">Register an agent</button>
+      <div class="actions">
+        <button class="btn btn-primary" type="button" id="connect-agent">Connect an agent</button>
+        <button class="btn btn-ghost" type="button" id="add-agent">Register by hand</button>
+      </div>
     </header>
     <div class="cells cells-auto" id="agent-cells"></div>
   </div>
@@ -180,6 +192,26 @@
       <div class="code-key" id="detail-key"></div>
       <div class="code" id="detail-code"></div>
       <p class="fine" id="detail-snap"></p>
+    </div>
+  </aside>
+
+  <aside class="sheet" id="connect" hidden role="dialog" aria-modal="true" aria-labelledby="connect-h">
+    <header class="sheet-head">
+      <div><h2 class="d3" id="connect-h">Connect an agent</h2><p>Each agent session runs Control Tower's MCP server. Run this in the repo the agent works on.</p></div>
+      <button class="btn btn-ghost" type="button" data-close>Close <span class="key">[Esc]</span></button>
+    </header>
+    <div class="section">
+      <h3>Claude Code</h3>
+      <div class="snippet"><pre id="cn-cli"></pre><button class="btn btn-ghost" type="button" data-copy="cn-cli">Copy</button></div>
+      <h3>Any MCP client (.mcp.json, Cursor)</h3>
+      <div class="snippet"><pre id="cn-json"></pre><button class="btn btn-ghost" type="button" data-copy="cn-json">Copy</button></div>
+      <p class="fine">Give each agent its own <code>CT_AGENT</code> name. Replace <code>/path/to/Control-Tower</code> with where you cloned this repo.</p>
+    </div>
+    <div class="section" id="cn-key-section">
+      <h3>Join key</h3>
+      <p class="fine" id="cn-key-note"></p>
+      <div class="actions"><button class="btn btn-ghost" type="button" id="cn-rotate">Issue a new join key</button></div>
+      <output class="result" id="cn-result" aria-live="polite"></output>
     </div>
   </aside>
 

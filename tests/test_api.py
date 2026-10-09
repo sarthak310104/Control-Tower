@@ -84,7 +84,7 @@ def test_unparsable_file_does_not_invalidate_symbol_claims(client, project, agen
 def test_symbol_claim_on_unparsable_file_is_422(client, project, agents):
     alice, _ = agents
     r = client.post("/claims", json=claim_body(project, alice, "helper", source="def x(:\n"))
-    assert r.status_code == 422 and "not valid Python" in r.json()["detail"]
+    assert r.status_code == 422 and "doesn't parse" in r.json()["detail"]
 
 
 def test_concurrent_claims_on_same_symbol_grant_exactly_one(client, project):
@@ -232,3 +232,57 @@ def test_demo_seed_is_repeatable_and_scoped(client, project):
     types = [e["type"] for e in client.get("/activity", params={"project_id": pid}).json()]
     assert types.count("claim_rejected") == 2
     assert client.get("/projects/" + str(project["id"])).status_code == 200  # other projects untouched
+
+
+TS_SOURCE = """\
+export class CartStore {
+  add(item: string) {
+    return item;
+  }
+  clear() {
+    return [];
+  }
+}
+"""
+
+
+def test_typescript_symbol_claims_conflict_like_python(client, project, agents):
+    alice, bob = agents
+    body = lambda who, sym: claim_body(project, who, sym, source=TS_SOURCE, file_path="web/cart.ts")  # noqa: E731
+    assert client.post("/claims", json=body(alice, "CartStore.add")).status_code == 201
+    assert client.post("/claims", json=body(bob, "CartStore")).status_code == 409        # class contains the method
+    assert client.post("/claims", json=body(bob, "CartStore.clear")).status_code == 201  # sibling method is free
+    symbols = client.get("/files/content", params={"project_id": project["id"], "file_path": "web/cart.ts"}).json()["symbols"]
+    assert {s["symbol"] for s in symbols} == {"CartStore", "CartStore.add", "CartStore.clear"}
+
+
+def test_symbol_claim_in_unsupported_language_is_a_clear_422(client, project, agents):
+    alice, _ = agents
+    r = client.post("/claims", json=claim_body(project, alice, "main", source="puts 1\n", file_path="bin/run.rb"))
+    assert r.status_code == 422 and "line range" in r.json()["detail"]
+    ok = client.post("/claims", json=claim_body(project, alice, source="puts 1\n", file_path="bin/run.rb", lines=(1, 1)))
+    assert ok.status_code == 201
+
+
+def test_symbols_endpoint_uses_the_file_extension(client):
+    rows = client.post("/claims/symbols", json={"source": "func helper() int {\n\treturn 1\n}\n", "file_path": "x.go"}).json()
+    assert rows == [{"symbol": "helper", "line_start": 1, "line_end": 3}]
+
+
+def test_reaper_expires_claims_held_too_long_even_with_heartbeats(client, project, agents, db):
+    alice, _ = agents
+    c = client.post("/claims", json=claim_body(project, alice, "helper")).json()
+    db.query(Claim).filter(Claim.id == c["id"]).update({Claim.created_at: datetime.now(timezone.utc) - timedelta(hours=5)})
+    db.commit()
+    client.post("/claims/heartbeat", params={"agent_id": alice["id"]})  # still heartbeating
+    assert reap_expired_claims(db, max_age_seconds=4 * 3600)[0].id == c["id"]
+    expired = [e for e in client.get("/activity", params={"project_id": project["id"]}).json() if e["type"] == "claim_expired"]
+    assert expired[0]["payload"]["reason"] == "max_age"
+    assert reap_expired_claims(db, max_age_seconds=0) == []  # 0 turns the limit off
+
+
+def test_oversized_and_malformed_input_is_rejected(client, project, agents):
+    alice, _ = agents
+    assert client.post("/projects", json={"name": "has spaces"}).status_code == 422
+    body = claim_body(project, alice, "helper", note="x" * 5000)
+    assert client.post("/claims", json=body).status_code == 422

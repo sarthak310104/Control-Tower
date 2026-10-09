@@ -41,6 +41,7 @@
     scrollTo(0, 0);
     render();
     if (route === "dashboard") requestAnimationFrame(CT.timeline.render);
+    if (connectAfterRoute && route === "home") { connectAfterRoute = false; openConnect(); }
   }
   addEventListener("hashchange", go);
 
@@ -77,7 +78,12 @@
   $("#proj").addEventListener("change", (e) => CT.selectProject(e.target.value));
 
   /* workspace picker */
+  let needToken = false, connectAfterRoute = false;  // a new workspace opens "Connect an agent" once it's shown
   function renderWorkspace() {
+    const locked = !!store.health.auth_enabled && (needToken || !CT.auth.token);
+    $("#token-form").hidden = !locked;
+    $("#ws-body").hidden = locked;
+    if (locked) return;
     const list = $("#ws-list");
     list.replaceChildren(...store.projects.map((p) => el("li", {}, el("button", { type: "button", onclick: () => enter(p.id) }, p.name, el("span", {}, p.id === store.projectId ? "Current" : "Open")))));
     list.hidden = !store.projects.length;
@@ -86,9 +92,23 @@
     $("#ws-demo").textContent = store.projects.some((p) => p.name === store.health.demo_project) ? "Reload the sample project" : "Load the sample project";
   }
   async function enter(id) { await CT.selectProject(id); location.hash = "home"; }
+  $("#token-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const status = $("#token-status");
+    CT.auth.token = $("#token-in").value.trim();
+    needToken = false; status.textContent = "Checking…";
+    try { await CT.loadProjects(); $("#token-in").value = ""; status.textContent = ""; renderWorkspace(); }
+    catch (err) { CT.auth.token = null; needToken = true; status.textContent = err.status === 401 ? "That token was rejected." : err.message; }
+  });
+  CT.on("unauthorized", () => {
+    if (needToken) return;
+    CT.auth.token = null; needToken = true;
+    $("#token-status").textContent = "Your session needs the admin token again.";
+    if (route !== "workspace") location.hash = "workspace"; else renderWorkspace();
+  });
   $("#ws-new").addEventListener("submit", async (e) => {
     e.preventDefault(); const name = $("#ws-name").value.trim(); if (!name) return;
-    try { const p = await CT.createProject(name); $("#ws-name").value = ""; await enter(p.id); }
+    try { const p = await CT.createProject(name); $("#ws-name").value = ""; connectAfterRoute = true; await enter(p.id); }
     catch (err) { $("#ws-status").textContent = err.message; }
   });
   $("#ws-demo").addEventListener("click", async () => {
@@ -140,7 +160,8 @@
     scenarioButtons();
     const expiring = active().filter((c) => store.ttl - (Date.now() - c.beat) < store.ttl * .4).length;
     const stat = (label, v, hot) => el("div", { class: "stat" + (hot ? " hot" : "") }, el("span", {}, label), el("b", {}, String(v).padStart(2, "0")));
-    $("#dash-stats").replaceChildren(stat("Active claims", k), stat("Agents online", store.agents.filter((a) => agentState(a) === "active").length), stat("Collisions this hour", r, r > 0), stat("Expiring soon", expiring, expiring > 0));
+    const edits = CT.editFindings().filter((e) => e.at > Date.now() - 3_600_000).length;
+    $("#dash-stats").replaceChildren(stat("Active claims", k), stat("Collisions stopped this hour", r, r > 0), stat("Edits outside a claim this hour", edits, edits > 0), stat("Expiring soon", expiring, expiring > 0));
     CT.timeline.render();
   }
 
@@ -182,6 +203,7 @@
 
   function renderActivity() { $("#ev-count").textContent = `${store.events.length} events`; feedInto($("#feed"), 200); msgsInto($("#msgs"), 100); }
 
+  const BAD_EVENTS = ["claim_rejected", "claim_expired", "claim_invalidated", "edit_unclaimed", "edit_conflict"];
   function describe(e) {
     const p = e.payload || {}, code = (t) => el("code", {}, t);
     const tgt = p.symbol_name || (p.line_start ? `lines ${p.line_start}–${p.line_end}` : "a range");
@@ -190,16 +212,22 @@
       case "claim_created": return ["claimed ", code(tgt), " in ", code(p.file_path), p.note ? `. “${p.note}”` : ""];
       case "claim_released": return ["released ", code(tgt), " in ", code(p.file_path), p.note ? `. “${p.note}”` : ""];
       case "claim_rejected": return ["was refused ", code(tgt), " in ", code(p.file_path), `. ${p.conflicting_agent} holds overlapping code.`];
-      case "claim_expired": return ["lost ", code(tgt), " in ", code(p.file_path), " after its session went quiet"];
+      case "claim_expired": return ["lost ", code(tgt), " in ", code(p.file_path), p.reason === "max_age" ? " after holding it longer than the maximum" : " after its session went quiet"];
       case "claim_invalidated": return ["lost ", code(tgt), " in ", code(p.file_path), " because that symbol no longer exists"];
       case "message_sent": return [p.to_agent_id ? `messaged ${agentName(p.to_agent_id)}: ` : "told everyone: ", p.preview];
+      case "edit_unclaimed":
+      case "edit_conflict": {
+        const where = p.symbols?.length ? p.symbols.map((s, i) => [i ? ", " : "", code(s)]) : [code(`lines ${(p.ranges || []).map((r) => r[0] === r[1] ? r[0] : `${r[0]}–${r[1]}`).join(", ")}`)];
+        const inside = (p.overlaps || []).map((o) => `${o.agent}'s ${o.target}`).join(", ");
+        return ["changed ", ...where, " in ", code(p.file_path), " without a claim", inside ? `, inside ${inside}` : ""];
+      }
     }
     return [e.type];
   }
   function feedInto(list, max) {
     const items = [...store.events].reverse().slice(0, max);
     if (!items.length) { list.replaceChildren(el("li", { class: "empty" }, el("strong", {}, "Nothing yet."), "Claims, releases, refusals and messages show up here as they happen.")); return; }
-    list.replaceChildren(...items.map((e) => el("li", { class: "ev" + (["claim_rejected", "claim_expired", "claim_invalidated"].includes(e.type) ? " bad" : "") + (e.isNew ? " fresh" : "") },
+    list.replaceChildren(...items.map((e) => el("li", { class: "ev" + (BAD_EVENTS.includes(e.type) ? " bad" : "") + (e.isNew ? " fresh" : "") },
       el("time", { datetime: e.created_at }, clock(e.at)), el("div", {}, el("span", { class: "who", "--c": agentColor(e.agent_id) }, agentName(e.agent_id)), " ", el("span", { class: "what" }, ...describe(e))))));
     store.events.forEach((e) => (e.isNew = false));
   }
@@ -229,8 +257,8 @@
   /* ---------------- sheets ---------------- */
   function showSheet(sel) { closeSheets(true); lastFocus = document.activeElement; $(sel).hidden = false; $("#scrim").hidden = false; $(sel).querySelector("[data-close]").focus(); }
   function closeSheets(silent) {
-    const was = !$("#detail").hidden || !$("#sim").hidden;
-    $("#detail").hidden = true; $("#sim").hidden = true; $("#scrim").hidden = true; openId = null;
+    const was = !$("#detail").hidden || !$("#sim").hidden || !$("#connect").hidden;
+    $("#detail").hidden = true; $("#sim").hidden = true; $("#connect").hidden = true; $("#scrim").hidden = true; openId = null;
     Object.values(scenes).forEach((s) => s.closePop?.());
     if (!silent && was && lastFocus) lastFocus.focus();
   }
@@ -278,6 +306,33 @@
   }
   $("#open-sim").addEventListener("click", () => openSim());
   $("#add-agent").addEventListener("click", () => openSim({ register: true }));
+  $("#connect-agent").addEventListener("click", () => openConnect());
+
+  /* ---------------- connect an agent ---------------- */
+  function openConnect() {
+    const p = store.project; if (!p) return;
+    const authOn = !!store.health.auth_enabled, key = store.joinKeys[p.id];
+    const keyVal = key || "<join key>";
+    const env = [["CT_URL", location.origin], ["CT_PROJECT", p.name], ...(authOn ? [["CT_JOIN_KEY", keyVal]] : []), ["CT_AGENT", "claude-backend"], ["CT_ROLE", "backend"]];
+    $("#cn-cli").textContent = ["claude mcp add control-tower \\", ...env.map(([k, v]) => `  -e ${k}=${v} \\`), "  -- python /path/to/Control-Tower/run_mcp.py"].join("\n");
+    $("#cn-json").textContent = JSON.stringify({ mcpServers: { "control-tower": { command: "python", args: ["/path/to/Control-Tower/run_mcp.py"], env: Object.fromEntries(env) } } }, null, 2);
+    $("#cn-rotate").hidden = !authOn;
+    $("#cn-result").textContent = "";
+    $("#cn-key-note").textContent = !authOn
+      ? "Auth is off on this coordinator, so agents join without a key. Set CT_ADMIN_TOKEN on the coordinator to require one."
+      : key ? "Shown above. Anyone with this key can join this workspace as a new agent, so share it like a password. It isn't shown again after you leave this tab."
+      : "The join key is only shown when it's created. Issue a new one to fill it in above. Agents that already joined keep working.";
+    showSheet("#connect");
+  }
+  $("#cn-rotate").addEventListener("click", async () => {
+    try { await CT.rotateJoinKey(store.projectId); openConnect(); $("#cn-result").textContent = "New join key issued. The old one no longer works for new agents."; }
+    catch (err) { $("#cn-result").className = "result bad"; $("#cn-result").textContent = err.message; }
+  });
+  document.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", async () => {
+    const pre = $("#" + b.dataset.copy);
+    try { await navigator.clipboard.writeText(pre.textContent); b.textContent = "Copied"; setTimeout(() => (b.textContent = "Copy"), 1500); }
+    catch { const r = document.createRange(); r.selectNodeContents(pre); const s = getSelection(); s.removeAllRanges(); s.addRange(r); b.textContent = "Selected"; }
+  }));
   $("#compose").addEventListener("click", () => openSim({ msgTo: store.agents[0]?.id }));
 
   function syncSelects() {
@@ -303,7 +358,7 @@
     let syms = null;
     if (isNew) {
       const src = $("#c-source").value, path = $("#c-path").value;
-      if (src.trim() && path.endsWith(".py")) { try { syms = await CT.api("/claims/symbols", { method: "POST", body: { source: src } }); } catch { syms = null; } }
+      if (src.trim() && path.includes(".")) { try { syms = await CT.api("/claims/symbols", { method: "POST", body: { source: src, file_path: path } }); } catch { syms = null; } }
     } else syms = (store.contents[file] || await CT.loadContent(file))?.symbols;
     const opts = (syms || []).map((s) => el("option", { value: s.symbol }, `${s.symbol}  (${s.line_start}–${s.line_end})`));
     opts.push(el("option", { value: "" }, syms?.length ? "A line range instead" : "A line range"));
@@ -381,6 +436,13 @@
       r = await CT.claim({ agentId: cf.id, file: "app/service.py", symbol: "UserService.delete", note: "Soft-delete for the account page" });
       if (r.refused) toast("codex-frontend tried UserService.delete. Refused: it's inside the class gemini-tests holds.", true);
       await wait(2600); await CT.send(cf.id, null, "Holding off on delete(). I'll pick it up after the fixtures refactor.");
+      await wait(2800);
+      const pricing = store.contents["app/pricing.py"] || await CT.loadContent("app/pricing.py");
+      const total = pricing?.symbols?.find((s) => s.symbol === "total");
+      if (total) {
+        await CT.reconcile(cf.id, [{ file_path: "app/pricing.py", source: pricing.source, changed: [[total.line_start + 2, total.line_start + 3]], status: "modified" }], "sample");
+        toast("codex-frontend's commit changed total(), which claude-backend holds. Reconciliation flagged it.", true);
+      }
     } catch (err) { toast(err.message, true); }
     finally { playing = false; playingChanged = true; render(); }
   }
@@ -417,6 +479,8 @@
   /* ---------------- boot ---------------- */
   CT.timeline.bind();
   (async () => {
+    try { store.health = await CT.api("/health"); store.healthLoaded = true; } catch { CT.emit("online", false); }
+    if (store.health.auth_enabled && !CT.auth.token) { route = "workspace"; location.replace("#workspace"); go(); return; }
     try { await CT.loadProjects(); } catch { CT.emit("online", false); }
     const saved = Number(storage.get("ct.project"));
     const id = store.projects.some((p) => p.id === saved) ? saved : null;

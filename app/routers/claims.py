@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.auth import Principal, get_principal, require_act_as, require_project_access
 from app.db import get_db
 from app.models import Claim, ClaimStatus
 from app.routers._guards import require_agent, require_project
@@ -14,7 +15,7 @@ from app.schemas import (
     SymbolOut,
     SymbolsRequest,
 )
-from app.services.ast_conflict import UnparsableFileError, extract_symbols
+from app.services.ast_conflict import UnparsableFileError, UnsupportedLanguageError, extract_symbols
 from app.services.claims import (
     ClaimConflictError,
     ClaimRequest,
@@ -42,7 +43,9 @@ def _to_request(payload: ClaimCreate) -> ClaimRequest:
 
 
 @router.post("", response_model=ClaimOut, status_code=201)
-def new_claim(payload: ClaimCreate, db: Session = Depends(get_db)):
+def new_claim(payload: ClaimCreate, db: Session = Depends(get_db), p: Principal = Depends(get_principal)):
+    require_project_access(p, payload.project_id)
+    require_act_as(p, payload.agent_id)
     require_agent(db, payload.agent_id, payload.project_id)
     try:
         return create_claim(db, _to_request(payload))
@@ -65,12 +68,14 @@ def new_claim(payload: ClaimCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/check", response_model=ClaimCheckOut)
-def dry_run_claim(payload: ClaimCreate, db: Session = Depends(get_db)):
+def dry_run_claim(payload: ClaimCreate, db: Session = Depends(get_db), p: Principal = Depends(get_principal)):
     """
     Same resolution + overlap logic as POST /claims, but writes nothing: no
     claim, no invalidations, no activity events. Lets an agent ask "would
     this collide, and with whom?" before committing to a plan.
     """
+    require_project_access(p, payload.project_id)
+    require_act_as(p, payload.agent_id)
     require_agent(db, payload.agent_id, payload.project_id, touch=False)
     try:
         (start, end), conflicts = check_claim(db, _to_request(payload))
@@ -98,17 +103,21 @@ def dry_run_claim(payload: ClaimCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/symbols", response_model=list[SymbolOut])
-def list_symbols(payload: SymbolsRequest):
-    """The claimable symbols in a piece of Python source, with current line spans. Stateless."""
+def list_symbols(payload: SymbolsRequest, _p: Principal = Depends(get_principal)):
+    """
+    The claimable symbols in a piece of source, with current line spans. Stateless.
+    Pass file_path so the language can be picked from its extension (Python if omitted).
+    """
     try:
-        symbols = extract_symbols(payload.source)
-    except UnparsableFileError as exc:
+        symbols = extract_symbols(payload.source, payload.file_path)
+    except (UnparsableFileError, UnsupportedLanguageError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return [SymbolOut(symbol=s.qualified_name, line_start=s.line_start, line_end=s.line_end) for s in symbols.values()]
 
 
 @router.post("/{claim_id}/release", response_model=ClaimOut)
-def do_release(claim_id: int, payload: ClaimRelease, db: Session = Depends(get_db)):
+def do_release(claim_id: int, payload: ClaimRelease, db: Session = Depends(get_db), p: Principal = Depends(get_principal)):
+    require_act_as(p, payload.agent_id)
     require_agent(db, payload.agent_id)
     try:
         return release_claim(db, claim_id, payload.agent_id, payload.release_note)
@@ -119,7 +128,8 @@ def do_release(claim_id: int, payload: ClaimRelease, db: Session = Depends(get_d
 
 
 @router.post("/{claim_id}/heartbeat", response_model=ClaimOut)
-def do_heartbeat(claim_id: int, agent_id: int, db: Session = Depends(get_db)):
+def do_heartbeat(claim_id: int, agent_id: int, db: Session = Depends(get_db), p: Principal = Depends(get_principal)):
+    require_act_as(p, agent_id)
     require_agent(db, agent_id)
     try:
         return heartbeat_claim(db, claim_id, agent_id)
@@ -130,8 +140,9 @@ def do_heartbeat(claim_id: int, agent_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/heartbeat", response_model=AgentHeartbeatOut)
-def do_agent_heartbeat(agent_id: int, db: Session = Depends(get_db)):
+def do_agent_heartbeat(agent_id: int, db: Session = Depends(get_db), p: Principal = Depends(get_principal)):
     """Refresh every active claim an agent holds in one call (what the MCP layer's timer uses)."""
+    require_act_as(p, agent_id)
     require_agent(db, agent_id)
     return AgentHeartbeatOut(agent_id=agent_id, claims_refreshed=heartbeat_agent(db, agent_id))
 
@@ -143,7 +154,9 @@ def list_claims(
     status: ClaimStatus | None = None,
     agent_id: int | None = None,
     db: Session = Depends(get_db),
+    p: Principal = Depends(get_principal),
 ):
+    require_project_access(p, project_id)
     require_project(db, project_id)
     q = db.query(Claim).filter(Claim.project_id == project_id)
     if file_path is not None:

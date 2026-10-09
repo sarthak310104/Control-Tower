@@ -329,3 +329,12 @@ a.cell:hover { border-color: var(--line-hi); background: var(--panel); }
   .lane-name { padding: 0 10px; font-size: 11px; }
 }
 .inline .field-in { flex: 1; min-width: 0; width: auto; }
+
+/* auth + connect */
+.token-form, .ws-body { display: grid; gap: 12px; }
+.token-form h2 { font-size: 15px; font-weight: 600; letter-spacing: -0.02em; }
+.token-form > p { color: var(--muted); font-size: 13px; }
+.snippet { position: relative; }
+.snippet pre { margin: 0; background: var(--panel); border: 1px solid var(--line); padding: 12px 14px; font: 12px/1.6 var(--mono); overflow-x: auto; white-space: pre; color: var(--text); }
+.snippet .btn { position: absolute; top: 6px; right: 6px; min-height: 28px; padding: 4px 10px; }
+.lg-edit { background: transparent; box-shadow: inset 0 0 0 2px var(--signal); }

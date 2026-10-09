@@ -95,7 +95,8 @@
     onEvent(e) {
       const file = e.payload?.file_path, tw = file && this.towers[file];
       if (e.type === "claim_rejected") { this.ring(tw, 0xff4d00); this.flashClaim = { id: e.payload.conflicting_claim_id, until: performance.now() + 900 }; this.flash = 1; }
-      if (e.type === "claim_expired" || e.type === "claim_invalidated") this.ring(tw, 0xff4d00);
+      if (e.type === "claim_expired" || e.type === "claim_invalidated" || e.type === "edit_unclaimed") this.ring(tw, 0xff4d00);
+      if (e.type === "edit_conflict") { this.ring(tw, 0xff4d00); this.flashClaim = { id: e.payload.overlaps?.[0]?.claim_id, until: performance.now() + 900 }; this.flash = 1; }
       if (e.type === "claim_created") this.ring(tw, 0xe6e6e6);
     }
     ring(tw, color) {

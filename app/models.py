@@ -33,6 +33,9 @@ class ActivityType(str, enum.Enum):
     claim_invalidated = "claim_invalidated"
     claim_rejected = "claim_rejected"  # conflict detected, claim never granted
     message_sent = "message_sent"
+    # Git reconciliation (services/reconcile.py): what an agent actually changed vs what it claimed.
+    edit_unclaimed = "edit_unclaimed"  # changed lines no claim of theirs covered
+    edit_conflict = "edit_conflict"    # ...and those lines were inside another agent's active claim
 
 
 class Project(Base):
@@ -48,6 +51,9 @@ class Project(Base):
     name = Column(String, nullable=False, unique=True)
     repo_root = Column(Text, nullable=True)  # informational; not enforced server-side
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # SHA-256 of the project's join key. Agents present the key once to join and
+    # get their own token back; only checked when auth is on (see app/auth.py).
+    join_key_hash = Column(Text, nullable=True)
 
 
 class Agent(Base):
@@ -173,3 +179,25 @@ class FileSnapshot(Base):
     line_count = Column(Integer, nullable=False)
     updated_by = Column(Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AgentToken(Base):
+    """
+    A bearer token an agent uses for every call once it has joined. Only the
+    SHA-256 is stored; the token itself is shown once, at join. An agent can
+    hold several (one per session); revoking sets revoked_at.
+    """
+
+    __tablename__ = "agent_tokens"
+
+    id = Column(Integer, primary_key=True)
+    agent_id = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False)
+    token_hash = Column(Text, nullable=False, unique=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+
+    agent = relationship("Agent")
+
+
+Index("ix_agent_tokens_agent", AgentToken.agent_id)

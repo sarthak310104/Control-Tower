@@ -23,6 +23,9 @@ class MCPSettings:
 
     coordinator_url: str = field(default_factory=lambda: os.getenv("CT_URL", "http://localhost:8000").rstrip("/"))
     project: str = field(default_factory=lambda: os.getenv("CT_PROJECT", "default"))
+    # The project's join key, from whoever created the project. Needed only
+    # when the coordinator has auth on; the agent gets its own token on join.
+    join_key: str | None = field(default_factory=lambda: os.getenv("CT_JOIN_KEY") or None)
     agent: str = field(default_factory=lambda: os.getenv("CT_AGENT", ""))
     role: str | None = field(default_factory=lambda: os.getenv("CT_ROLE") or None)
     # The agent's checkout. Files are read from here and sent to the

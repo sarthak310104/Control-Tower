@@ -102,8 +102,10 @@
       if (!this.ok) return;
       const s = this.sats[e.agent_id], f = this.fileNodes[e.payload?.file_path];
       const t0 = performance.now();
-      if ((e.type === "claim_rejected" || e.type === "claim_expired") && f) {
-        if (s) s.flash = 1; this.flash = 1;
+      const reaching = e.type === "claim_rejected" || e.type === "edit_conflict";  // an agent went for someone else's code
+      if ((reaching || e.type === "claim_expired" || e.type === "edit_unclaimed") && f) {
+        if (s && reaching) s.flash = 1;
+        this.flash = 1;
         const shock = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(.3, 1)), new THREE.LineBasicMaterial({ color: 0xff4d00, transparent: true, blending: THREE.AdditiveBlending }));
         const SP = 60, sv = []; for (let i = 0; i < SP; i++) sv.push(new THREE.Vector3(Math.random() - .5, Math.random() - .5, Math.random() - .5).normalize().multiplyScalar(1.5 + Math.random() * 3));
         const sg = new THREE.BufferGeometry(); sg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(SP * 3), 3));
@@ -111,7 +113,7 @@
         const bg = new THREE.BufferGeometry(); bg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(24 * 3), 3));
         const broken = new THREE.Line(bg, new THREE.LineBasicMaterial({ color: 0xff4d00, transparent: true, blending: THREE.AdditiveBlending }));
         this.scene.add(shock, sparks, broken);
-        this.effects.push({ kind: "hit", t0, dur: 1800, s: e.type === "claim_rejected" ? s : null, f, shock, sparks, sv, broken });
+        this.effects.push({ kind: "hit", t0, dur: 1800, s: reaching ? s : null, f, shock, sparks, sv, broken });
       } else if (e.type === "claim_created" && f) {
         const ring = CT.gfx.glowSprite(s ? s.col : 0xffffff, .4); this.scene.add(ring);
         this.effects.push({ kind: "bloom", t0, dur: 1000, f, ring });

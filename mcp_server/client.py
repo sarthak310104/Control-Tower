@@ -23,6 +23,11 @@ class CoordinatorClient:
         self._http = httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=transport)
         self.base_url = base_url
 
+    def use_token(self, token: str | None) -> None:
+        """The agent's own bearer token, sent on every call after joining (auth on only)."""
+        if token:
+            self._http.headers["Authorization"] = f"Bearer {token}"
+
     async def aclose(self) -> None:
         await self._http.aclose()
 
@@ -43,11 +48,9 @@ class CoordinatorClient:
         return resp.json()
 
     # projects / agents
-    async def ensure_project(self, name: str, repo_root: str | None) -> dict:
-        return await self._request("POST", "/projects", json={"name": name, "repo_root": repo_root})
-
-    async def register_agent(self, project_id: int, name: str, role: str | None) -> dict:
-        return await self._request("POST", "/agents", json={"project_id": project_id, "name": name, "role": role})
+    async def join(self, project: str, name: str, role: str | None, join_key: str | None) -> dict:
+        headers = {"X-Join-Key": join_key} if join_key else None
+        return await self._request("POST", "/agents/join", json={"project": project, "name": name, "role": role}, headers=headers)
 
     async def list_agents(self, project_id: int) -> list[dict]:
         return await self._request("GET", "/agents", params={"project_id": project_id})
@@ -86,4 +89,9 @@ class CoordinatorClient:
     async def activity(self, project_id: int, since_id: int, limit: int) -> list[dict]:
         return await self._request(
             "GET", "/activity", params={"project_id": project_id, "since_id": since_id, "limit": limit}
+        )
+
+    async def reconcile(self, project_id: int, agent_id: int, base: str | None, files: list[dict]) -> dict:
+        return await self._request(
+            "POST", "/reconcile", json={"project_id": project_id, "agent_id": agent_id, "base": base, "files": files}
         )

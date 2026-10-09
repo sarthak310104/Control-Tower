@@ -15,7 +15,12 @@ to the agent:
 - liveness: a background heartbeat for every claim this agent holds. The
   agent never has to remember to heartbeat; claims stay alive exactly as
   long as this process does. When the session ends, heartbeats stop and the
-  coordinator's reaper frees the claims after one TTL.
+  coordinator's reaper frees the claims after one TTL;
+- git: remembers HEAD when the session starts, and `reconcile` (also run
+  on every release) sends what actually changed since then, so edits made
+  without a claim are caught;
+- auth: joins with the project's join key when the coordinator needs one
+  and uses the per-agent token it gets back for every later call.
 
 Nothing here writes to stdout except the MCP protocol itself (stdio
 transport): logs go to stderr.
@@ -31,7 +36,8 @@ import httpx
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from app.services.ast_conflict import UnparsableFileError, extract_symbols
+from app.services.ast_conflict import UnparsableFileError, UnsupportedLanguageError, extract_symbols
+from mcp_server import gitdiff
 from mcp_server.client import CoordinatorClient, CoordinatorError, CoordinatorUnavailable
 from mcp_server.config import MCPSettings
 from mcp_server.workspace import WorkspaceError, canonical_path, read_source
@@ -42,13 +48,17 @@ INSTRUCTIONS = """\
 You share this codebase with other AI agents, coordinated through Control Tower.
 Protocol:
 1. At the start of a task, call `catch_up` to see what others are doing and read new messages.
-2. Before editing a Python function, method or class, `claim` it by symbol name
-   (e.g. "UserService.create"). For other files, or code that isn't a symbol, claim a line range.
+2. Before editing a function, method or class, `claim` it by symbol name (e.g. "UserService.create").
+   Symbol claims work in Python, JavaScript, TypeScript, Go and Java; anywhere else, or for code
+   that isn't a symbol, claim a line range.
    Use `list_symbols` to see a file's symbols and who holds them.
 3. If a claim is refused, don't edit that code. Work on something else, or `send_message`
    to the holder to coordinate.
 4. When you finish a piece of work, `release` its claim with a short note of what changed.
    Before ending your session, `release_all`.
+5. Releasing also checks your git changes against your claims. If it reports edits outside
+   your claims, mention them to the affected agents; if they were inside someone else's
+   claim, message that agent right away. You can run `reconcile` any time to check.
 Claims are kept alive automatically while this session runs; you never need to heartbeat.
 """
 
@@ -62,6 +72,8 @@ class Session:
     inbox_cursor: int = 0
     activity_cursor: int = 0
     agent_names: dict[int, str] = field(default_factory=dict)
+    git_base: str | None = None  # HEAD when the session started; reconcile diffs against it
+    git_note: str | None = None  # why reconciliation is unavailable, if it is
     _join_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def ensure_joined(self) -> tuple[int, int]:
@@ -70,11 +82,17 @@ class Session:
         async with self._join_lock:
             if self.agent_id is None:
                 s = self.settings
-                project = await self.api.ensure_project(s.project, str(s.repo_root))
-                agent = await self.api.register_agent(project["id"], s.agent, s.role)
-                self.project_id, self.agent_id = project["id"], agent["id"]
+                joined = await self.api.join(s.project, s.agent, s.role, s.join_key)
+                self.api.use_token(joined["token"])
+                agent = joined["agent"]
+                self.project_id, self.agent_id = joined["project_id"], agent["id"]
                 self.agent_names[agent["id"]] = agent["name"]
-                logger.info("joined project %r as %r (agent #%s)", s.project, s.agent, agent["id"])
+                try:
+                    self.git_base = await asyncio.to_thread(gitdiff.head, s.repo_root)
+                except gitdiff.GitUnavailable as exc:
+                    self.git_note = f"reconciliation is off: {exc}"
+                logger.info("joined project %r as %r (agent #%s), git base %s",
+                            s.project, s.agent, agent["id"], self.git_base or "none")
         return self.project_id, self.agent_id
 
     async def refresh_agents(self) -> list[dict]:
@@ -122,7 +140,7 @@ def _claim_body(project_id: int, agent_id: int, rel: str, source: str,
         raise ToolError("pass either symbol_name or line_start/line_end, not both")
     if not symbol_name:
         if line_start is None or line_end is None:
-            raise ToolError("pass symbol_name (Python files) or both line_start and line_end")
+            raise ToolError("pass symbol_name, or both line_start and line_end")
         if line_start < 1 or line_end < line_start:
             raise ToolError("line range must satisfy 1 <= line_start <= line_end")
     return {
@@ -161,7 +179,7 @@ def build_server(settings: MCPSettings, transport: httpx.AsyncBaseTransport | No
         name="control-tower",
         title="Control Tower",
         instructions=INSTRUCTIONS,
-        version="0.2.0",
+        version="0.3.0",
         lifespan=lifespan,
     )
 
@@ -240,14 +258,17 @@ def build_server(settings: MCPSettings, transport: httpx.AsyncBaseTransport | No
     @tool
     async def list_symbols(file_path: str) -> dict:
         """
-        The functions, classes and methods in a Python file (dotted names, current line ranges),
-        and which of them are currently claimed and by whom. Use the names here with `claim`.
+        The functions, classes and methods in a file (dotted names, current line ranges), and which
+        of them are currently claimed and by whom. Works for Python, JavaScript, TypeScript, Go and
+        Java. Use the names here with `claim`.
         """
         project_id, agent_id = await session.ensure_joined()
         rel = canonical_path(settings.repo_root, file_path)
         source = read_source(settings.repo_root, rel)
         try:
-            symbols = extract_symbols(source)
+            symbols = extract_symbols(source, rel)
+        except UnsupportedLanguageError as exc:
+            raise ToolError(str(exc))
         except UnparsableFileError as exc:
             raise ToolError(f"{rel} doesn't parse right now ({exc}); claim a line range instead")
         active = await api.list_claims(project_id, file_path=rel, status="active")
@@ -301,7 +322,7 @@ def build_server(settings: MCPSettings, transport: httpx.AsyncBaseTransport | No
         note: str | None = None,
     ) -> dict:
         """
-        Claim a function/method/class (by dotted symbol name, Python only) or a line range (any file)
+        Claim a function/method/class (by dotted symbol name; Python, JS/TS, Go, Java) or a line range (any file)
         before editing it. Other agents are then refused overlapping claims until you release.
         `note` should say what you're about to do; other agents see it.
         """
@@ -333,14 +354,21 @@ def build_server(settings: MCPSettings, transport: httpx.AsyncBaseTransport | No
 
     @tool
     async def release(claim_id: int, note: str | None = None) -> dict:
-        """Release one of your claims when you're done. `note` should summarise what you changed."""
-        _, agent_id = await session.ensure_joined()
+        """
+        Release one of your claims when you're done. `note` should summarise what you changed.
+        Also checks your git changes in that file against your claims.
+        """
+        project_id, agent_id = await session.ensure_joined()
         c = await api.release(claim_id, agent_id, note)
-        return {"released": True, **_describe_claim(c)}
+        out = {"released": True, **_describe_claim(c)}
+        check = await run_reconcile(project_id, agent_id, only={c["file_path"]})
+        if check:
+            out["reconcile"] = check
+        return out
 
     @tool
     async def release_all(note: str | None = None) -> dict:
-        """Release every claim you hold. Call this before your session ends."""
+        """Release every claim you hold, then check all your git changes against your claims. Call before your session ends."""
         project_id, agent_id = await session.ensure_joined()
         mine = await api.list_claims(project_id, agent_id=agent_id, status="active")
         released, failed = [], []
@@ -350,7 +378,71 @@ def build_server(settings: MCPSettings, transport: httpx.AsyncBaseTransport | No
                 released.append(c["id"])
             except CoordinatorError as exc:  # e.g. expired between list and release
                 failed.append({"claim_id": c["id"], "reason": str(exc.detail)})
-        return {"released": released, "failed": failed}
+        out = {"released": released, "failed": failed}
+        check = await run_reconcile(project_id, agent_id)
+        if check:
+            out["reconcile"] = check
+        return out
+
+    async def run_reconcile(project_id: int, agent_id: int, only: set[str] | None = None) -> dict | None:
+        """Sends this session's git changes to POST /reconcile. None when git isn't usable here."""
+        if session.git_note:
+            return None
+        try:
+            changes = await asyncio.to_thread(gitdiff.collect, settings.repo_root, session.git_base, only)
+        except gitdiff.GitUnavailable as exc:
+            session.git_note = f"reconciliation is off: {exc}"
+            return None
+        files = []
+        for ch in changes:
+            entry = {"file_path": ch.path, "status": ch.status, "changed": ch.ranges, "source": None}
+            if ch.status != "deleted":
+                try:
+                    entry["source"] = read_source(settings.repo_root, ch.path)
+                except WorkspaceError:
+                    continue  # binary, too big, or vanished: nothing to compare
+                if ch.status == "added":
+                    entry["changed"] = []
+            files.append(entry)
+        if not files:
+            return {"clean": True, "summary": "no changes since the session started" if only is None else "no changes in this file"}
+        r = await api.reconcile(project_id, agent_id, session.git_base, files)
+        problems = [
+            {
+                "file_path": f["file_path"],
+                "lines": [f"{a}-{b}" if a != b else str(a) for a, b in f["ranges"]],
+                "symbols": f["symbols"],
+                "inside_claims_of": [f"{o['agent']} ({o['target']})" for o in f["overlaps"]],
+            }
+            for f in r["findings"]
+        ]
+        out = {
+            "clean": r["clean"],
+            "summary": (f"all {r['lines_changed']} changed lines were inside your claims" if r["clean"]
+                        else f"{r['lines_changed'] - r['lines_covered']} of {r['lines_changed']} changed lines were outside your claims"),
+        }
+        if problems:
+            out["edits_outside_your_claims"] = problems
+            if any(p["inside_claims_of"] for p in problems):
+                out["what_to_do"] = ("Some of these edits are inside code another agent holds. Message them now "
+                                     "(send_message) so they know before they edit it too.")
+            else:
+                out["what_to_do"] = "These were logged for the other agents. Next time, claim before editing."
+        if r["added"]:
+            out["new_files"] = r["added"]
+        return out
+
+    @tool
+    async def reconcile() -> dict:
+        """
+        Check everything you've changed in git since this session started (commits and uncommitted
+        edits) against your claims. Edits outside your claims are reported to the other agents.
+        """
+        project_id, agent_id = await session.ensure_joined()
+        result = await run_reconcile(project_id, agent_id)
+        if result is None:
+            raise ToolError(session.git_note or "reconciliation isn't available")
+        return result
 
     @tool
     async def board(file_path: str | None = None) -> dict:

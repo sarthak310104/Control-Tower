@@ -59,6 +59,11 @@
       const cy = Math.round(li * laneH + laneH * .78);
       for (let dy = -3; dy <= 3; dy++) for (let dx = -3 + Math.abs(dy); dx <= 3 - Math.abs(dy); dx++) put(x + dx, cy + dy, [255, 77, 0]);
     });
+    CT.editFindings().forEach((ev) => {  // edits outside a claim: hollow orange squares
+      const li = store.agents.findIndex((a) => a.id === ev.agent_id), x = xOf(ev.at); if (li < 0 || x < 0) return;
+      const cy = Math.round(li * laneH + laneH * .78);
+      for (let d = -3; d <= 3; d++) { put(x + d, cy - 3, [255, 77, 0]); put(x + d, cy + 3, [255, 77, 0]); put(x - 3, cy + d, [255, 77, 0]); put(x + 3, cy + d, [255, 77, 0]); }
+    });
     store.messages.forEach((m) => {
       const li = store.agents.findIndex((a) => a.id === m.from_agent_id), x = xOf(m.at); if (li < 0 || x < 0) return;
       const cy = Math.round(li * laneH + laneH * .78);
@@ -72,12 +77,14 @@
   const tAt = (x) => Date.now() - win * 60_000 + (x / $("#tl-wrap").clientWidth) * win * 60_000;
   function readout(x) {
     const wrap = $("#tl-wrap"), ro = $("#tl-readout"), t = tAt(x);
+    const edits = CT.editFindings().filter((e) => Math.abs(e.at - t) < win * 1000);
     $("#tl-scrub").style.left = x + "px"; $("#tl-scrub").classList.add("show");
     ro.replaceChildren(el("div", { class: "r-time" }, Date.now() - t < 15_000 ? "Now" : `${clock(t)} · ${dur(Date.now() - t)} ago`),
       ...stateAt(t).map(({ a, held, refused }) => el("div", { class: "r-row", "--c": agentColor(a.id) }, el("i"),
         el("div", {}, el("span", { style: "font:500 12px var(--mono);color:var(--c)" }, a.name, " "),
           held.length ? held.map((c, i) => [i ? ", " : "", el("code", {}, target(c))]) : el("span", {}, "holding nothing"),
-          refused.map((r) => el("div", { class: "r-bad" }, `refused ${r.payload.symbol_name || "a range"}, held by ${r.payload.conflicting_agent}`))))));
+          refused.map((r) => el("div", { class: "r-bad" }, `refused ${r.payload.symbol_name || "a range"}, held by ${r.payload.conflicting_agent}`)),
+          edits.filter((x) => x.agent_id === a.id).map((x) => el("div", { class: "r-bad" }, `edited ${x.payload.symbols?.[0] || x.payload.file_path} without a claim`))))));
     ro.classList.add("show");
     const rw = ro.offsetWidth; ro.style.left = (x + 14 + rw > wrap.clientWidth - 8 ? Math.max(8, x - rw - 14) : x + 14) + "px";
   }

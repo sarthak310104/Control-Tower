@@ -7,10 +7,17 @@ Deliberately pure -- no DB, no I/O beyond what's passed in -- so this is
 testable in isolation and the algorithmic correctness doesn't depend on
 Postgres being up. services/claims.py is the thin DB-touching orchestration
 layer that calls into this.
+
+Python is parsed with the stdlib `ast` module; JavaScript, TypeScript, TSX,
+Go and Java with tree-sitter (services/ts_symbols.py). The language comes
+from the file's extension; with no path given, Python is assumed.
 """
 
 import ast
 from dataclasses import dataclass
+
+from app.services import ts_symbols
+from app.services.ts_symbols import UnsupportedLanguageError, language_for  # noqa: F401  (re-exported)
 
 
 class SymbolNotFoundError(Exception):
@@ -34,18 +41,30 @@ class SymbolRange:
     line_end: int
 
 
-def extract_symbols(source: str) -> dict[str, SymbolRange]:
+def extract_symbols(source: str, file_path: str | None = None) -> dict[str, SymbolRange]:
     """
-    Parses Python source and returns qualified_name -> SymbolRange for every
-    function, async function, class, and method defined in it. Nesting uses
-    dotted notation: "ClassA.method_b", "outer_func.inner_closure".
+    Returns qualified_name -> SymbolRange for every claimable symbol in
+    `source`. Nesting uses dotted notation: "ClassA.method_b",
+    "outer_func.inner_closure".
 
-    Scoped to Python only for now (uses the `ast` stdlib module). Other
-    languages would need a different parser per-language (tree-sitter is the
-    obvious choice for a polyglot version) -- not attempted here; non-Python
-    files must use explicit line-range claims instead of symbol_name (see
-    resolve_range).
+    The language is picked from `file_path`'s extension (Python when None).
+    Raises UnsupportedLanguageError for languages without symbol support
+    (claim a line range there) and UnparsableFileError when the file doesn't
+    parse cleanly (realistically: someone is mid-edit).
     """
+    lang = language_for(file_path)
+    if lang is None:
+        ext = file_path.rsplit(".", 1)[-1] if file_path and "." in file_path else "these"
+        raise UnsupportedLanguageError(
+            f"symbol claims aren't supported for .{ext} files; claim a line range instead"
+        )
+    if lang != "python":
+        try:
+            spans = ts_symbols.extract(source, lang)
+        except SyntaxError as exc:
+            raise UnparsableFileError(f"file has {lang} syntax errors: {exc}") from exc
+        return {name: SymbolRange(name, s.line_start, s.line_end) for name, s in spans.items()}
+
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
@@ -72,6 +91,7 @@ def resolve_range(
     symbol_name: str | None,
     line_start: int | None,
     line_end: int | None,
+    file_path: str | None = None,
 ) -> tuple[int, int]:
     """
     Resolves a claim request to a concrete (line_start, line_end), freshly
@@ -81,23 +101,26 @@ def resolve_range(
 
     Exactly one of symbol_name or (line_start, line_end) must be usable:
     - symbol_name given: re-parse `source`, look it up. Raises
-      SymbolNotFoundError if it's gone (renamed/deleted since claimed) or
-      UnparsableFileError if the file is currently invalid Python (likely
-      another agent mid-edit) -- callers should catch this and suggest an
-      explicit line range instead.
-    - line_start/line_end given: used as-is, no parsing needed. This is the
-      required path for non-Python files.
+      SymbolNotFoundError if it's gone (renamed/deleted since claimed),
+      UnparsableFileError if the file currently doesn't parse (likely
+      another agent mid-edit), or UnsupportedLanguageError for a language
+      without symbol support -- callers suggest a line range for the last two.
+    - line_start/line_end given: used as-is, no parsing needed. This works
+      for any file, in any language.
     """
     if symbol_name is not None:
-        symbols = extract_symbols(source)
+        symbols = extract_symbols(source, file_path)
         if symbol_name not in symbols:
-            available = ", ".join(sorted(symbols)) or "none"
+            names = sorted(symbols)
+            available = ", ".join(names[:25]) + (f" and {len(names) - 25} more" if len(names) > 25 else "") or "none"
             raise SymbolNotFoundError(
                 f"symbol '{symbol_name}' not found in current file content (available: {available})"
             )
         rng = symbols[symbol_name]
         return rng.line_start, rng.line_end
     if line_start is not None and line_end is not None:
+        if line_start < 1 or line_end < line_start:
+            raise ValueError("line range must satisfy 1 <= line_start <= line_end")
         return line_start, line_end
     raise ValueError("must provide either symbol_name or both line_start and line_end")
 

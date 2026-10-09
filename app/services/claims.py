@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 import hashlib
 
-from sqlalchemy import text
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -12,6 +12,7 @@ from app.services.ast_conflict import (
     ranges_overlap,
     SymbolNotFoundError,
     UnparsableFileError,
+    UnsupportedLanguageError,
 )
 
 
@@ -87,13 +88,13 @@ def _record_snapshot(db: Session, req: ClaimRequest) -> None:
 
 def _resolve_requested(req: ClaimRequest) -> tuple[int, int]:
     try:
-        return resolve_range(req.source, req.symbol_name, req.line_start, req.line_end)
+        return resolve_range(req.source, req.symbol_name, req.line_start, req.line_end, req.file_path)
     except UnparsableFileError:
         raise ValueError(
-            "file content is not valid Python right now (likely another agent mid-edit) -- "
+            "file content doesn't parse right now (likely another agent mid-edit) -- "
             "retry shortly, or claim an explicit line range instead of a symbol name"
         )
-    except SymbolNotFoundError as exc:
+    except (SymbolNotFoundError, UnsupportedLanguageError) as exc:
         raise ValueError(str(exc))
 
 
@@ -128,8 +129,8 @@ def find_conflicts(
     for existing in existing_claims:
         if existing.symbol_name is not None:
             try:
-                fresh_start, fresh_end = resolve_range(req.source, existing.symbol_name, None, None)
-            except UnparsableFileError:
+                fresh_start, fresh_end = resolve_range(req.source, existing.symbol_name, None, None, req.file_path)
+            except (UnparsableFileError, UnsupportedLanguageError):
                 fresh_start, fresh_end = existing.line_start, existing.line_end
             except SymbolNotFoundError:
                 if invalidate_stale:
@@ -247,27 +248,34 @@ def heartbeat_agent(db: Session, agent_id: int) -> int:
     return count
 
 
-def reap_expired_claims(db: Session) -> list[Claim]:
+def reap_expired_claims(db: Session, max_age_seconds: int | None = None) -> list[Claim]:
     """
-    Sweeps ACTIVE claims with no heartbeat within the TTL window and marks
-    them expired. Called periodically by the background reaper (see
-    services/reaper.py) so a crashed agent or an ended session doesn't hold
-    a lock forever.
+    Expires ACTIVE claims that either missed their heartbeat for longer than
+    the TTL (the agent crashed or its session ended), or are older than
+    MAX_CLAIM_AGE_SECONDS even with heartbeats (the agent is alive but forgot
+    the claim). Called periodically by the background reaper
+    (services/reaper.py).
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=settings.claim_ttl_seconds)
+    now = datetime.now(timezone.utc)
+    max_age = settings.max_claim_age_seconds if max_age_seconds is None else max_age_seconds
+    too_quiet = Claim.last_heartbeat_at < now - timedelta(seconds=settings.claim_ttl_seconds)
+    condition = or_(too_quiet, Claim.created_at < now - timedelta(seconds=max_age)) if max_age > 0 else too_quiet
     stale = (
         db.query(Claim)
-        .filter(Claim.status == ClaimStatus.active, Claim.last_heartbeat_at < cutoff)
+        .filter(Claim.status == ClaimStatus.active, condition)
         .with_for_update(skip_locked=True)
         .all()
     )
     for claim in stale:
+        quiet = claim.last_heartbeat_at < now - timedelta(seconds=settings.claim_ttl_seconds)
+        reason = "no_heartbeat" if quiet else "max_age"
         claim.status = ClaimStatus.expired
-        claim.released_at = datetime.now(timezone.utc)
-        claim.release_note = f"auto-expired: no heartbeat for {settings.claim_ttl_seconds}s"
+        claim.released_at = now
+        claim.release_note = (f"auto-expired: no heartbeat for {settings.claim_ttl_seconds}s" if quiet
+                              else f"auto-expired: held longer than the {max_age // 60}-minute maximum")
         _log_activity(
             db, claim.project_id, ActivityType.claim_expired, claim.agent_id,
-            {"claim_id": claim.id, "file_path": claim.file_path, "symbol_name": claim.symbol_name},
+            {"claim_id": claim.id, "file_path": claim.file_path, "symbol_name": claim.symbol_name, "reason": reason},
         )
     db.commit()
     return stale
